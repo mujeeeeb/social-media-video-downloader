@@ -12,12 +12,14 @@ app = FastAPI()
 load_dotenv()
 
 # CORS configuration
-app.add_middleware(CORSMiddleware,
+app.add_middleware(
+    CORSMiddleware,
     allow_origins=[os.getenv("ALLOWED_ORIGIN")],  # Adjust this to your needs
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 @app.get("/download")
 async def download_video(url: str = Query(...), format: str = Query("best")):
@@ -32,7 +34,6 @@ async def download_video(url: str = Query(...), format: str = Query("best")):
         # Create a unique output template
         uid = uuid.uuid4().hex[:8]
         output_template = f"/tmp/{uid}.%(ext)s"
-
         ydl_opts = {
             'format': format,
             'outtmpl': output_template,
@@ -65,13 +66,27 @@ async def download_video(url: str = Query(...), format: str = Query("best")):
             media_type="application/octet-stream",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'}
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error during download: {str(e)}")
+
+
+@app.get("/info")
+async def video_info(url: str = Query(...)):
+    try:
+        with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
+            info = ydl.extract_info(url, download=False)
+        return {
+            "title": info.get("title", "Video"),
+            "thumbnail": info.get("thumbnail", ""),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching info: {str(e)}")
+
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to the Social Media Video Downloader API. Use /download?url=<video_url>&format=<video_format> to download videos."}
+
 
 if __name__ == "__main__":
     import uvicorn
