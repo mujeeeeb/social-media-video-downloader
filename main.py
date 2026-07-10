@@ -23,21 +23,27 @@ app.add_middleware(
 
 def sanitize_filename(title: str) -> str:
     """Remove emojis, non-ASCII chars, and illegal filename characters."""
-    # Strip non-ASCII (emojis, unicode symbols, etc.)
     title = title.encode("ascii", "ignore").decode("ascii")
-    # Remove characters illegal in filenames
     title = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", title)
     title = title.strip("-").strip() or "video"
     return title
+
+
+def get_ydl_base_opts():
+    """Base yt-dlp options shared across all endpoints."""
+    return {
+        "quiet": True,
+        "no_warnings": True,
+        "socket_timeout": 30,
+    }
 
 
 @app.get("/")
 async def root():
     return {
         "message": (
-            "Welcome to the Social Media Video Downloader API. "
-            "Use /download?url=<video_url>&format=<video_format> to download videos. "
-            "Use /info?url=<video_url> to fetch title and thumbnail."
+            "Social Media Video Downloader API. "
+            "Endpoints: /info, /formats, /download"
         )
     }
 
@@ -46,12 +52,8 @@ async def root():
 async def video_info(url: str = Query(...)):
     """Return title and thumbnail URL for a given video URL (no download)."""
     try:
-        ydl_opts = {
-            "quiet": True,
-            "skip_download": True,
-            "no_warnings": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        opts = {**get_ydl_base_opts(), "skip_download": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         return {
@@ -62,43 +64,100 @@ async def video_info(url: str = Query(...)):
         raise HTTPException(status_code=500, detail=f"Error fetching info: {str(e)}")
 
 
+@app.get("/formats")
+async def video_formats(url: str = Query(...)):
+    """
+    Return all available video formats for a given URL.
+    The Flutter app uses this to show the user only qualities that truly exist.
+    """
+    try:
+        opts = {**get_ydl_base_opts(), "skip_download": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        raw_formats = info.get("formats", [])
+
+        # Build a clean list of unique video formats
+        seen_heights = set()
+        video_formats = []
+
+        for f in raw_formats:
+            height = f.get("height")
+            vcodec = f.get("vcodec", "none")
+            ext = f.get("ext", "mp4")
+
+            # Skip audio-only and formats with no height info
+            if vcodec == "none" or height is None:
+                continue
+
+            # Only keep one format per resolution (pick the best one)
+            if height in seen_heights:
+                continue
+
+            seen_heights.add(height)
+            video_formats.append({
+                "format_id": f.get("format_id"),
+                "height": height,
+                "ext": ext,
+                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "label": f"{height}p",
+            })
+
+        # Sort from highest to lowest resolution
+        video_formats.sort(key=lambda x: x["height"], reverse=True)
+
+        # Always add an audio-only option
+        audio_formats = [{
+            "format_id": "bestaudio/best",
+            "height": 0,
+            "ext": "mp3",
+            "filesize": None,
+            "label": "Audio Only",
+        }]
+
+        return {
+            "title": info.get("title", "Video"),
+            "thumbnail": info.get("thumbnail", ""),
+            "formats": video_formats + audio_formats,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching formats: {str(e)}")
+
+
 @app.get("/download")
 async def download_video(
     url: str = Query(...),
     format: str = Query("best"),
 ):
-    """Download a video/audio and stream it back to the client."""
+    """Download a video/audio by format selector and stream it back to the client."""
     try:
-        # ── Step 1: fetch metadata only (fast) ──────────────────────────────
-        ydl_opts_info = {
-            "quiet": True,
-            "skip_download": True,
-            "no_warnings": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts_info) as ydl:
+        # Step 1: fetch metadata only (fast)
+        info_opts = {**get_ydl_base_opts(), "skip_download": True}
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         raw_title = info.get("title", "video")
         safe_title = sanitize_filename(raw_title)
-        extension = "mp4"
+        is_audio = "audio" in format.lower() or format == "bestaudio/best"
+        extension = "mp3" if is_audio else "mp4"
         filename = f"{safe_title}.{extension}"
 
-        # ── Step 2: download to /tmp ─────────────────────────────────────────
+        # Step 2: download to /tmp
         uid = uuid.uuid4().hex[:8]
         output_template = f"/tmp/{uid}.%(ext)s"
 
-        ydl_opts_dl = {
+        dl_opts = {
+            **get_ydl_base_opts(),
             "format": format,
             "outtmpl": output_template,
-            "quiet": True,
-            "no_warnings": True,
             "merge_output_format": "mp4",
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts_dl) as ydl:
+        with yt_dlp.YoutubeDL(dl_opts) as ydl:
             ydl.download([url])
 
-        # ── Step 3: find the downloaded file ────────────────────────────────
+        # Step 3: find the downloaded file
         actual_file_path = None
         for f in os.listdir("/tmp"):
             if f.startswith(uid):
@@ -111,7 +170,9 @@ async def download_video(
                 detail="Download failed: output file not found.",
             )
 
-        # ── Step 4: stream the file and clean up ────────────────────────────
+        file_size = os.path.getsize(actual_file_path)
+
+        # Step 4: stream the file back and clean up after
         def iterfile():
             with open(actual_file_path, "rb") as f:
                 yield from f
@@ -121,7 +182,8 @@ async def download_video(
             iterfile(),
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": f'attachment; filename="{filename}"'
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(file_size),  # Enables real progress bar in app
             },
         )
 
