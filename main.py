@@ -145,7 +145,7 @@ async def video_formats(url: str = Query(...)):
 @app.get("/download")
 async def download_video(
     url: str = Query(...),
-    format: str = Query("best"),
+    format: str = Query("bv*+ba/b"),
 ):
     """Download a video/audio by format selector and stream it back to the client."""
     try:
