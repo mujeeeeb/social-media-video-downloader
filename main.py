@@ -20,6 +20,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Cookies setup (for bypassing YouTube bot detection) ---
+COOKIES_PATH = "/tmp/cookies.txt"
+
+cookies_content = os.getenv("YTDLP_COOKIES_CONTENT")
+if cookies_content:
+    with open(COOKIES_PATH, "w") as f:
+        f.write(cookies_content)
+# -------------------------------------------------------------
+
 
 def sanitize_filename(title: str) -> str:
     """Remove emojis, non-ASCII chars, and illegal filename characters."""
@@ -31,11 +40,19 @@ def sanitize_filename(title: str) -> str:
 
 def get_ydl_base_opts():
     """Base yt-dlp options shared across all endpoints."""
-    return {
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "socket_timeout": 30,
+        "user_agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        ),
     }
+    if os.path.exists(COOKIES_PATH):
+        opts["cookiefile"] = COOKIES_PATH
+    return opts
 
 
 @app.get("/")
