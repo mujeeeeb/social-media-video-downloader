@@ -54,7 +54,7 @@ def get_ydl_base_opts():
         # avoids YouTube filtering out all formats for the web client.
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android", "ios"],
+                "player_client": ["ios", "android"],
             }
         },
     }
