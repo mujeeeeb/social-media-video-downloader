@@ -145,7 +145,7 @@ async def video_formats(url: str = Query(...)):
 @app.get("/download")
 async def download_video(
     url: str = Query(...),
-    format: str = Query("bv*+ba/b"),
+    format: str = Query("best"),
 ):
     """Download a video/audio by format selector and stream it back to the client."""
     try:
@@ -164,15 +164,38 @@ async def download_video(
         uid = uuid.uuid4().hex[:8]
         output_template = f"/tmp/{uid}.%(ext)s"
 
-        dl_opts = {
-            **get_ydl_base_opts(),
-            "format": format,
-            "outtmpl": output_template,
-            "merge_output_format": "mp4",
-        }
+        # Try the requested format first, then fall back to safer
+        # selectors if that exact format isn't available for this video
+        # (this commonly happens on Shorts / certain videos with a
+        # limited format set).
+        if is_audio:
+            format_chain = [format, "bestaudio/best", "best"]
+        else:
+            format_chain = [format, "best", "worst"]
 
-        with yt_dlp.YoutubeDL(dl_opts) as ydl:
-            ydl.download([url])
+        # Remove duplicates while preserving order
+        seen = set()
+        format_chain = [f for f in format_chain if not (f in seen or seen.add(f))]
+
+        last_error = None
+        for attempt_format in format_chain:
+            dl_opts = {
+                **get_ydl_base_opts(),
+                "format": attempt_format,
+                "outtmpl": output_template,
+                "merge_output_format": "mp4",
+            }
+            try:
+                with yt_dlp.YoutubeDL(dl_opts) as ydl:
+                    ydl.download([url])
+                last_error = None
+                break
+            except Exception as e:
+                last_error = e
+                continue
+
+        if last_error is not None:
+            raise last_error
 
         # Step 3: find the downloaded file
         actual_file_path = None
