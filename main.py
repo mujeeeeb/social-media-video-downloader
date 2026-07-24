@@ -49,6 +49,14 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
+        # Force yt-dlp to use the Android/iOS player clients, which
+        # currently serve formats without requiring a PO token — this
+        # avoids YouTube filtering out all formats for the web client.
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "ios", "web"],
+            }
+        },
     }
     if os.path.exists(COOKIES_PATH):
         opts["cookiefile"] = COOKIES_PATH
