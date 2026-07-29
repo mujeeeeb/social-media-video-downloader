@@ -257,12 +257,14 @@ async def download_video(
                 yield from f
             os.unlink(actual_file_path)
 
+      content_type = "audio/mpeg" if is_audio else "video/mp4"
+
         return StreamingResponse(
             iterfile(),
-            media_type="application/octet-stream",
+            media_type=content_type,
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Length": str(file_size),  # Enables real progress bar in app
+                "Content-Length": str(file_size),
             },
         )
 
