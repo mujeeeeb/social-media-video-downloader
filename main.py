@@ -211,6 +211,19 @@ async def download_video(
                 "outtmpl": output_template,
                 "merge_output_format": "mp4",
             }
+            if is_audio:
+                # Always actually extract/convert to real audio-only
+                # mp3 using ffmpeg, regardless of what format yt-dlp
+                # picked. Without this, platforms that have no true
+                # audio-only stream would silently fall back to
+                # downloading the full video while still labeling it
+                # as .mp3 — producing a file that looks like audio
+                # but is actually a video underneath.
+                dl_opts["postprocessors"] = [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }]
             try:
                 with yt_dlp.YoutubeDL(dl_opts) as ydl:
                     ydl.download([url])
