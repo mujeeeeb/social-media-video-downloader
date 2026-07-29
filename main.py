@@ -49,6 +49,13 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
+        # "android"/"ios" previously bypassed YouTube's bot-check reliably
+        # without cookies. YouTube has since tightened detection further,
+        # so "tv" is added as an additional fallback client — it mimics a
+        # smart TV app and has historically been more resistant to the
+        # sign-in wall. We deliberately do NOT include "web" — without
+        # valid cookies, "web" gets blocked and breaks /info and /formats
+        # entirely (not just quality options).
         "extractor_args": {
             "youtube": {
                 "player_client": ["android", "ios", "tv"],
@@ -112,13 +119,9 @@ async def video_formats(url: str = Query(...)):
             if vcodec == "none" or height is None:
                 continue
 
-            # Only keep one format per resolution (pick the best one —
-            # raw_formats is already sorted ascending by quality, so the
-            # last entry wins when we iterate, giving us the best codec
-            # at each height). We overwrite instead of skip.
+            # Only keep one format per resolution (pick the best one)
             if height in seen_heights:
-                # Replace with a higher-bitrate entry at the same height
-                video_formats = [v for v in video_formats if v["height"] != height]
+                continue
 
             seen_heights.add(height)
             video_formats.append({
@@ -132,9 +135,9 @@ async def video_formats(url: str = Query(...)):
         # Sort from highest to lowest resolution
         video_formats.sort(key=lambda x: x["height"], reverse=True)
 
-        # Always add an audio-only option at the end
+        # Always add an audio-only option
         audio_formats = [{
-            "format_id": "bestaudio",
+            "format_id": "bestaudio/best",
             "height": 0,
             "ext": "mp3",
             "filesize": None,
@@ -165,47 +168,33 @@ async def download_video(
 
         raw_title = info.get("title", "video")
         safe_title = sanitize_filename(raw_title)
-
-        # FIX: Detect audio-only requests without false-positives.
-        # Previously "audio" in format.lower() matched ANY format string
-        # containing "bestaudio" (e.g. "137+bestaudio/best"), incorrectly
-        # treating 1080p video downloads as audio-only requests.
-        is_audio = (
-            format in ("bestaudio", "bestaudio/best")
-            or (format.startswith("bestaudio") and "+" not in format)
-        )
-
+        is_audio = "audio" in format.lower() or format == "bestaudio/best"
         extension = "mp3" if is_audio else "mp4"
         filename = f"{safe_title}.{extension}"
 
-        # Step 2: build the format chain
+        # Step 2: download to /tmp
         uid = uuid.uuid4().hex[:8]
         output_template = f"/tmp/{uid}.%(ext)s"
 
+        # Try the requested format first, then fall back to safer
+        # selectors if that exact format isn't available for this video
+        # (this commonly happens on Shorts / certain videos with a
+        # limited format set).
+        #
+        # For video formats: most high-quality YouTube formats (1080p,
+        # 720p, etc.) are video-only, so we merge them with the best
+        # available audio track. "+bestaudio/best" means: "use this
+        # format plus best audio; if that combo isn't available, just
+        # use the format alone (it may already include audio)."
         if is_audio:
-            # Pure audio request — use audio selectors directly.
             format_chain = [format, "bestaudio/best", "best"]
         else:
-            # Video request.
-            # YouTube (and some other platforms) serve 720p/1080p as
-            # VIDEO-ONLY streams that must be merged with a separate
-            # audio stream. Appending +bestaudio/best tells yt-dlp to
-            # merge the requested video format with the best available
-            # audio. ffmpeg must be installed for this to work.
-            #
-            # FIX: Only prepend the +bestaudio suffix if the format
-            # string doesn't already contain it, to avoid creating
-            # malformed selectors like "137+bestaudio/137+bestaudio/best".
-            if "+bestaudio" in format:
-                format_chain = [format, "bestvideo+bestaudio/best", "best", "worst"]
-            else:
-                format_chain = [
-                    f"{format}+bestaudio/best",
-                    format,
-                    "bestvideo+bestaudio/best",
-                    "best",
-                    "worst",
-                ]
+            format_chain = [
+                f"{format}+bestaudio/best",
+                format,
+                "best",
+                "worst",
+            ]
 
         # Remove duplicates while preserving order
         seen = set()
@@ -220,6 +209,13 @@ async def download_video(
                 "merge_output_format": "mp4",
             }
             if is_audio:
+                # Always actually extract/convert to real audio-only
+                # mp3 using ffmpeg, regardless of what format yt-dlp
+                # picked. Without this, platforms that have no true
+                # audio-only stream would silently fall back to
+                # downloading the full video while still labeling it
+                # as .mp3 — producing a file that looks like audio
+                # but is actually a video underneath.
                 dl_opts["postprocessors"] = [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
@@ -280,4 +276,4 @@ async def download_video(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000) 
