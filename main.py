@@ -49,12 +49,14 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
-        # Force yt-dlp to use the Android/iOS player clients, which
-        # currently serve formats without requiring a PO token — this
-        # avoids YouTube filtering out all formats for the web client.
+        # Now that the pot-server (po_token provider) is running
+        # alongside this app, the "web" client is usable again — it's
+        # required to get real 1080p/720p/480p separate video streams.
+        # "android"/"ios" are kept as fallback clients (they only ever
+        # expose one old low-quality muxed format, capped at 360p).
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"],
+                "player_client": ["web", "android", "ios"],
             }
         },
     }
@@ -176,10 +178,21 @@ async def download_video(
         # selectors if that exact format isn't available for this video
         # (this commonly happens on Shorts / certain videos with a
         # limited format set).
+        #
+        # For video formats: most high-quality YouTube formats (1080p,
+        # 720p, etc.) are video-only, so we merge them with the best
+        # available audio track. "+bestaudio/best" means: "use this
+        # format plus best audio; if that combo isn't available, just
+        # use the format alone (it may already include audio)."
         if is_audio:
             format_chain = [format, "bestaudio/best", "best"]
         else:
-            format_chain = [format, "best", "worst"]
+            format_chain = [
+                f"{format}+bestaudio/best",
+                format,
+                "best",
+                "worst",
+            ]
 
         # Remove duplicates while preserving order
         seen = set()
