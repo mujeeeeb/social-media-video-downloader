@@ -49,15 +49,16 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
-        # "android"/"ios" reliably bypass YouTube's bot-check without
-        # needing cookies. We deliberately do NOT include "web" here —
-        # without valid cookies, "web" gets blocked by YouTube's bot
-        # check, and that failure breaks /info and /formats entirely
-        # (not just quality options). This caps video quality at 360p,
-        # but keeps everything working reliably.
+        # "android"/"ios" previously bypassed YouTube's bot-check reliably
+        # without cookies. YouTube has since tightened detection further,
+        # so "tv" is added as an additional fallback client — it mimics a
+        # smart TV app and has historically been more resistant to the
+        # sign-in wall. We deliberately do NOT include "web" — without
+        # valid cookies, "web" gets blocked and breaks /info and /formats
+        # entirely (not just quality options).
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios"],
+                "player_client": ["android", "ios", "tv"],
             }
         },
     }
