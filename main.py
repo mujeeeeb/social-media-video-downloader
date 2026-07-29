@@ -257,7 +257,7 @@ async def download_video(
                 yield from f
             os.unlink(actual_file_path)
 
-      content_type = "audio/mpeg" if is_audio else "video/mp4"
+        content_type = "audio/mpeg" if is_audio else "video/mp4"
 
         return StreamingResponse(
             iterfile(),
