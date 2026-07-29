@@ -2,5 +2,5 @@ fastapi>=0.116.1
 python-dotenv>=1.1.1
 python-multipart>=0.0.20
 uvicorn>=0.35.0
-yt-dlp>=2026.7.25
+yt-dlp
 bgutil-ytdlp-pot-provider
