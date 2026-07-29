@@ -49,16 +49,21 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
-        # Now that the pot-server (po_token provider) is running
-        # alongside this app, the "web" client is usable again — it's
-        # required to get real 1080p/720p/480p separate video streams.
-        # "android"/"ios" are kept as fallback clients (they only ever
-        # expose one old low-quality muxed format, capped at 360p).
+        # "android"/"ios" go first because they reliably bypass YouTube's
+        # bot-check without needing cookies. "web" is added afterwards to
+        # try to unlock higher-quality (1080p/720p/etc) separate streams —
+        # but without valid cookies, "web" often still gets blocked even
+        # with a po_token. Listing it last (not first) means its failure
+        # no longer breaks the whole request; yt-dlp just uses whichever
+        # clients succeeded.
         "extractor_args": {
             "youtube": {
-                "player_client": ["web", "android", "ios"],
+                "player_client": ["android", "ios", "web"],
             }
         },
+        # Don't let one failing client (e.g. "web" being blocked) crash
+        # the entire extraction — just use whichever clients succeeded.
+        "ignoreerrors": "only_download",
     }
     if os.path.exists(COOKIES_PATH):
         opts["cookiefile"] = COOKIES_PATH
