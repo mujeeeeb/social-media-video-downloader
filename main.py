@@ -49,21 +49,17 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
-        # "android"/"ios" go first because they reliably bypass YouTube's
-        # bot-check without needing cookies. "web" is added afterwards to
-        # try to unlock higher-quality (1080p/720p/etc) separate streams —
-        # but without valid cookies, "web" often still gets blocked even
-        # with a po_token. Listing it last (not first) means its failure
-        # no longer breaks the whole request; yt-dlp just uses whichever
-        # clients succeeded.
+        # "android"/"ios" reliably bypass YouTube's bot-check without
+        # needing cookies. We deliberately do NOT include "web" here —
+        # without valid cookies, "web" gets blocked by YouTube's bot
+        # check, and that failure breaks /info and /formats entirely
+        # (not just quality options). This caps video quality at 360p,
+        # but keeps everything working reliably.
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "web"],
+                "player_client": ["android", "ios"],
             }
         },
-        # Don't let one failing client (e.g. "web" being blocked) crash
-        # the entire extraction — just use whichever clients succeeded.
-        "ignoreerrors": "only_download",
     }
     if os.path.exists(COOKIES_PATH):
         opts["cookiefile"] = COOKIES_PATH
