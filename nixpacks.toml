@@ -1,2 +1,5 @@
+[phases.setup]
+nixPkgs = ["ffmpeg"]
+
 [phases.install]
 cmds = ["uv sync --no-dev --no-install-project"]
