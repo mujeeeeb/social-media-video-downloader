@@ -96,7 +96,7 @@ async def video_info(url: str = Query(...)):
 @app.get("/formats")
 async def video_formats(url: str = Query(...)):
     """
-    Return all available video formats for a given URL.
+    Return all available video and audio formats for a given URL.
     The Flutter app uses this to show the user only qualities that truly exist.
     """
     try:
@@ -106,7 +106,9 @@ async def video_formats(url: str = Query(...)):
 
         raw_formats = info.get("formats", [])
 
-        # Build a clean list of unique video formats
+        # ------------------------------------------------------------
+        # VIDEO FORMATS — unchanged from the original logic
+        # ------------------------------------------------------------
         seen_heights = set()
         video_formats = []
 
@@ -135,14 +137,57 @@ async def video_formats(url: str = Query(...)):
         # Sort from highest to lowest resolution
         video_formats.sort(key=lambda x: x["height"], reverse=True)
 
-        # Always add an audio-only option
-        audio_formats = [{
-            "format_id": "bestaudio/best",
-            "height": 0,
-            "ext": "mp3",
-            "filesize": None,
-            "label": "Audio Only",
-        }]
+        # ------------------------------------------------------------
+        # AUDIO FORMATS — now pulled from real yt-dlp audio-only streams
+        # instead of a single hardcoded "Audio Only" placeholder, so the
+        # app can show real bitrate options (e.g. "160kbps (m4a)").
+        # ------------------------------------------------------------
+        seen_abr = set()
+        audio_formats = []
+
+        for f in raw_formats:
+            vcodec = f.get("vcodec", "none")
+            acodec = f.get("acodec", "none")
+
+            # Only keep audio-only streams (no video track)
+            if vcodec != "none" or acodec == "none":
+                continue
+
+            abr = f.get("abr") or f.get("tbr")
+            if not abr:
+                continue
+
+            abr_rounded = round(abr)
+
+            # Only keep one format per bitrate (avoid near-duplicate values)
+            if abr_rounded in seen_abr:
+                continue
+            seen_abr.add(abr_rounded)
+
+            ext = f.get("ext", "m4a")
+            audio_formats.append({
+                "format_id": f.get("format_id"),
+                "height": 0,
+                "ext": ext,
+                "abr": abr_rounded,
+                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "label": f"{abr_rounded}kbps ({ext})",
+            })
+
+        # Sort from highest to lowest bitrate
+        audio_formats.sort(key=lambda x: x["abr"], reverse=True)
+
+        # Fallback: if yt-dlp exposed no separate audio-only streams for
+        # this platform (some sites only offer combined video+audio),
+        # keep a generic option so audio download still works.
+        if not audio_formats:
+            audio_formats = [{
+                "format_id": "bestaudio/best",
+                "height": 0,
+                "ext": "mp3",
+                "filesize": None,
+                "label": "Audio Only",
+            }]
 
         return {
             "title": info.get("title", "Video"),
@@ -276,4 +321,4 @@ async def download_video(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    uvicorn.run(app, host="0.0.0.0", port=8000)
