@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import uuid
@@ -106,31 +108,58 @@ async def video_formats(url: str = Query(...)):
 
         raw_formats = info.get("formats", [])
 
+        # Duration (seconds) is used to *estimate* a real filesize for
+        # formats where yt-dlp doesn't provide "filesize" or
+        # "filesize_approx" directly (very common for adaptive/DASH
+        # streams on YouTube). Without this, every such format falls
+        # back to the same guessed size on the client, which is why
+        # different qualities were showing identical MB values.
+        duration = info.get("duration")  # seconds, may be None
+
+        def estimate_filesize(fmt: dict) -> int | None:
+            """Best-effort filesize in bytes for a single format dict."""
+            filesize = fmt.get("filesize") or fmt.get("filesize_approx")
+            if filesize:
+                return int(filesize)
+
+            # tbr = average total bitrate in Kbit/s (video formats) —
+            # this is present on almost every yt-dlp format even when
+            # filesize isn't, so we derive size from it directly.
+            bitrate = fmt.get("tbr") or fmt.get("vbr") or fmt.get("abr")
+            if bitrate and duration:
+                return int(bitrate * 1000 / 8 * duration)
+
+            return None
+
         # ------------------------------------------------------------
-        # VIDEO FORMATS — unchanged from the original logic
+        # VIDEO FORMATS
         # ------------------------------------------------------------
-        seen_heights = set()
-        video_formats = []
+        # Group by height and keep the *best* candidate per resolution
+        # (highest bitrate), instead of just the first one yt-dlp
+        # happened to list — otherwise a low-bitrate duplicate could
+        # silently get chosen for a given resolution.
+        best_by_height: dict[int, dict] = {}
 
         for f in raw_formats:
             height = f.get("height")
             vcodec = f.get("vcodec", "none")
-            ext = f.get("ext", "mp4")
 
             # Skip audio-only and formats with no height info
             if vcodec == "none" or height is None:
                 continue
 
-            # Only keep one format per resolution (pick the best one)
-            if height in seen_heights:
-                continue
+            tbr = f.get("tbr") or 0
+            current_best = best_by_height.get(height)
+            if current_best is None or tbr > (current_best.get("tbr") or 0):
+                best_by_height[height] = f
 
-            seen_heights.add(height)
+        video_formats = []
+        for height, f in best_by_height.items():
             video_formats.append({
                 "format_id": f.get("format_id"),
                 "height": height,
-                "ext": ext,
-                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "ext": f.get("ext", "mp4"),
+                "filesize": estimate_filesize(f),
                 "label": f"{height}p",
             })
 
@@ -138,12 +167,12 @@ async def video_formats(url: str = Query(...)):
         video_formats.sort(key=lambda x: x["height"], reverse=True)
 
         # ------------------------------------------------------------
-        # AUDIO FORMATS — now pulled from real yt-dlp audio-only streams
+        # AUDIO FORMATS — pulled from real yt-dlp audio-only streams
         # instead of a single hardcoded "Audio Only" placeholder, so the
-        # app can show real bitrate options (e.g. "160kbps (m4a)").
+        # app can show real bitrate options (e.g. "160kbps (m4a)")
+        # with real, distinct sizes.
         # ------------------------------------------------------------
-        seen_abr = set()
-        audio_formats = []
+        best_by_abr: dict[int, dict] = {}
 
         for f in raw_formats:
             vcodec = f.get("vcodec", "none")
@@ -158,19 +187,19 @@ async def video_formats(url: str = Query(...)):
                 continue
 
             abr_rounded = round(abr)
+            current_best = best_by_abr.get(abr_rounded)
+            if current_best is None:
+                best_by_abr[abr_rounded] = f
 
-            # Only keep one format per bitrate (avoid near-duplicate values)
-            if abr_rounded in seen_abr:
-                continue
-            seen_abr.add(abr_rounded)
-
+        audio_formats = []
+        for abr_rounded, f in best_by_abr.items():
             ext = f.get("ext", "m4a")
             audio_formats.append({
                 "format_id": f.get("format_id"),
                 "height": 0,
                 "ext": ext,
                 "abr": abr_rounded,
-                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "filesize": estimate_filesize(f),
                 "label": f"{abr_rounded}kbps ({ext})",
             })
 
