@@ -60,7 +60,8 @@ def get_ydl_base_opts():
         # entirely (not just quality options).
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "ios", "tv"],
+                 "player_client": ["web", "android", "ios", "tv"],
+
             }
         },
     }
