@@ -27,8 +27,10 @@ COOKIES_PATH = "/tmp/cookies.txt"
 
 cookies_content = os.getenv("YTDLP_COOKIES_CONTENT")
 if cookies_content:
-    with open(COOKIES_PATH, "w") as f:
-        f.write(cookies_content)
+    # Handle literal escaped '\n' strings from env vars and ensure clean output
+    cleaned_cookies = cookies_content.replace("\\n", "\n").strip()
+    with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+        f.write(cleaned_cookies + "\n")
 # -------------------------------------------------------------
 
 
@@ -51,21 +53,24 @@ def get_ydl_base_opts():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/125.0.0.0 Safari/537.36"
         ),
-        # "android"/"ios" previously bypassed YouTube's bot-check reliably
-        # without cookies. YouTube has since tightened detection further,
-        # so "tv" is added as an additional fallback client — it mimics a
-        # smart TV app and has historically been more resistant to the
-        # sign-in wall. We deliberately do NOT include "web" — without
-        # valid cookies, "web" gets blocked and breaks /info and /formats
-        # entirely (not just quality options).
-    "extractor_args": {
-    "youtube": {
-        "player_client": ["android", "ios", "tv"],
     }
-},
-    }
-    if os.path.exists(COOKIES_PATH):
+
+    if os.path.exists(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
         opts["cookiefile"] = COOKIES_PATH
+        # Desktop browser cookies must match the web/mweb client requests
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["web", "mweb"]
+            }
+        }
+    else:
+        # Fallback clients when no cookies are provided
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["android", "ios", "tv"]
+            }
+        }
+
     return opts
 
 
@@ -99,7 +104,7 @@ async def video_info(url: str = Query(...)):
 async def video_formats(url: str = Query(...)):
     """
     Return all available video and audio formats for a given URL.
-    The Flutter app uses this to show the user only qualities that truly exist.
+    The client uses this to show the user only qualities that truly exist.
     """
     try:
         opts = {**get_ydl_base_opts(), "skip_download": True}
@@ -107,13 +112,6 @@ async def video_formats(url: str = Query(...)):
             info = ydl.extract_info(url, download=False)
 
         raw_formats = info.get("formats", [])
-
-        # Duration (seconds) is used to *estimate* a real filesize for
-        # formats where yt-dlp doesn't provide "filesize" or
-        # "filesize_approx" directly (very common for adaptive/DASH
-        # streams on YouTube). Without this, every such format falls
-        # back to the same guessed size on the client, which is why
-        # different qualities were showing identical MB values.
         duration = info.get("duration")  # seconds, may be None
 
         def estimate_filesize(fmt: dict) -> int | None:
@@ -122,9 +120,6 @@ async def video_formats(url: str = Query(...)):
             if filesize:
                 return int(filesize)
 
-            # tbr = average total bitrate in Kbit/s (video formats) —
-            # this is present on almost every yt-dlp format even when
-            # filesize isn't, so we derive size from it directly.
             bitrate = fmt.get("tbr") or fmt.get("vbr") or fmt.get("abr")
             if bitrate and duration:
                 return int(bitrate * 1000 / 8 * duration)
@@ -134,17 +129,12 @@ async def video_formats(url: str = Query(...)):
         # ------------------------------------------------------------
         # VIDEO FORMATS
         # ------------------------------------------------------------
-        # Group by height and keep the *best* candidate per resolution
-        # (highest bitrate), instead of just the first one yt-dlp
-        # happened to list — otherwise a low-bitrate duplicate could
-        # silently get chosen for a given resolution.
         best_by_height: dict[int, dict] = {}
 
         for f in raw_formats:
             height = f.get("height")
             vcodec = f.get("vcodec", "none")
 
-            # Skip audio-only and formats with no height info
             if vcodec == "none" or height is None:
                 continue
 
@@ -163,14 +153,10 @@ async def video_formats(url: str = Query(...)):
                 "label": f"{height}p",
             })
 
-        # Sort from highest to lowest resolution
         video_formats.sort(key=lambda x: x["height"], reverse=True)
 
         # ------------------------------------------------------------
-        # AUDIO FORMATS — pulled from real yt-dlp audio-only streams
-        # instead of a single hardcoded "Audio Only" placeholder, so the
-        # app can show real bitrate options (e.g. "160kbps (m4a)")
-        # with real, distinct sizes.
+        # AUDIO FORMATS
         # ------------------------------------------------------------
         best_by_abr: dict[int, dict] = {}
 
@@ -178,7 +164,6 @@ async def video_formats(url: str = Query(...)):
             vcodec = f.get("vcodec", "none")
             acodec = f.get("acodec", "none")
 
-            # Only keep audio-only streams (no video track)
             if vcodec != "none" or acodec == "none":
                 continue
 
@@ -203,12 +188,8 @@ async def video_formats(url: str = Query(...)):
                 "label": f"{abr_rounded}kbps ({ext})",
             })
 
-        # Sort from highest to lowest bitrate
         audio_formats.sort(key=lambda x: x["abr"], reverse=True)
 
-        # Fallback: if yt-dlp exposed no separate audio-only streams for
-        # this platform (some sites only offer combined video+audio),
-        # keep a generic option so audio download still works.
         if not audio_formats:
             audio_formats = [{
                 "format_id": "bestaudio/best",
@@ -235,7 +216,6 @@ async def download_video(
 ):
     """Download a video/audio by format selector and stream it back to the client."""
     try:
-        # Step 1: fetch metadata only (fast)
         info_opts = {**get_ydl_base_opts(), "skip_download": True}
         with yt_dlp.YoutubeDL(info_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -246,20 +226,9 @@ async def download_video(
         extension = "mp3" if is_audio else "mp4"
         filename = f"{safe_title}.{extension}"
 
-        # Step 2: download to /tmp
         uid = uuid.uuid4().hex[:8]
         output_template = f"/tmp/{uid}.%(ext)s"
 
-        # Try the requested format first, then fall back to safer
-        # selectors if that exact format isn't available for this video
-        # (this commonly happens on Shorts / certain videos with a
-        # limited format set).
-        #
-        # For video formats: most high-quality YouTube formats (1080p,
-        # 720p, etc.) are video-only, so we merge them with the best
-        # available audio track. "+bestaudio/best" means: "use this
-        # format plus best audio; if that combo isn't available, just
-        # use the format alone (it may already include audio)."
         if is_audio:
             format_chain = [format, "bestaudio/best", "best"]
         else:
@@ -270,7 +239,6 @@ async def download_video(
                 "worst",
             ]
 
-        # Remove duplicates while preserving order
         seen = set()
         format_chain = [f for f in format_chain if not (f in seen or seen.add(f))]
 
@@ -283,13 +251,6 @@ async def download_video(
                 "merge_output_format": "mp4",
             }
             if is_audio:
-                # Always actually extract/convert to real audio-only
-                # mp3 using ffmpeg, regardless of what format yt-dlp
-                # picked. Without this, platforms that have no true
-                # audio-only stream would silently fall back to
-                # downloading the full video while still labeling it
-                # as .mp3 — producing a file that looks like audio
-                # but is actually a video underneath.
                 dl_opts["postprocessors"] = [{
                     "key": "FFmpegExtractAudio",
                     "preferredcodec": "mp3",
@@ -307,7 +268,6 @@ async def download_video(
         if last_error is not None:
             raise last_error
 
-        # Step 3: find the downloaded file
         actual_file_path = None
         for f in os.listdir("/tmp"):
             if f.startswith(uid):
@@ -322,7 +282,6 @@ async def download_video(
 
         file_size = os.path.getsize(actual_file_path)
 
-        # Step 4: stream the file back and clean up after
         def iterfile():
             with open(actual_file_path, "rb") as f:
                 yield from f
