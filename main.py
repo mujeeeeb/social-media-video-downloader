@@ -58,12 +58,11 @@ def get_ydl_base_opts():
         # sign-in wall. We deliberately do NOT include "web" — without
         # valid cookies, "web" gets blocked and breaks /info and /formats
         # entirely (not just quality options).
-        "extractor_args": {
-            "youtube": {
-                 "player_client": ["web"],
-
-            }
-        },
+    "extractor_args": {
+    "youtube": {
+        "player_client": ["tv", "web"],
+    }
+},
     }
     if os.path.exists(COOKIES_PATH):
         opts["cookiefile"] = COOKIES_PATH
